@@ -1,93 +1,125 @@
 import jax
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from jax import jit, grad, vmap, random
+from jax import jit, grad, jacobian, vmap
+from jax import random
 
-from pdemlp import random_layers, sigmoid
+from diffrax import diffeqsolve, ODETerm, Tsit5, SaveAt, PIDController
 
-def single_predict(layers, x0):
-    z = x0
-    for w, b in layers[:-1]:
-        z = sigmoid(jnp.dot(w, z) + b)
+from heat_eq_mlp import random_layers, sigmoid
 
-    w, b = layers[-1]
-    x = jnp.dot(w, z) + b
+def rayleigh_quotient(x, A):
+    return x.T@A@x/(x.T@x)
 
-    return x
+def compute_max_eigval(A, num_epochs=1000, step_size=0.001):
+    @jit
+    def update(x, A, eta=0.001):
+        return x + eta*grad(rayleigh_quotient)(x, A)
 
-predict = vmap(single_predict, in_axes=(None, 0))
+    key = random.PRNGKey(0)
+    x = random.normal(key, (N,))
+    x /= jnp.linalg.norm(x)
+    for epoch in range(num_epochs):
+        x = update(x, A, step_size)
 
-def ode_loss(layers, A, x0):
-    x = single_predict(layers, x0).T
-    return jnp.linalg.norm((x.T@x)*A@x + (x.T@A@x)*x)
+    eigvec = x/jnp.linalg.norm(x)
+    eigval = eigvec.T@A@eigvec
 
-#grad_loss = grad(loss)
+    return eigval, eigvec
 
-@jit
-def loss(layers, A, x0, eps=1.0e-8):
-    x = single_predict(layers, x0).T
-    #x_norm = jnp.linalg.norm(x)
-    if x_norm < eps:
-        return 0.0
-    #
-    #x = x.at[:].set(x / x_norm)
+def min_eigval(A, num_epochs=1000, step_size=0.001):
+    @jit
+    def update(x, A, eta=0.001):
+        return x - eta*grad(rayleigh_quotient)(x, A)
 
-    return -((x.T@A@x)/(x.T@x))**2
+    key = random.PRNGKey(0)
+    x = random.normal(key, (N,))
+    x /= jnp.linalg.norm(x)
+    for epoch in range(num_epochs):
+        x = update(x, A, step_size)
 
+    eigvec = x/jnp.linalg.norm(x)
+    eigval = eigvec.T@A@eigvec
 
-@jit
-def update(loss, layers, A, x0, eta=0.001):
-    grads = grad(loss)(layers, A, x0)
-    return [(w-eta*dw, b-eta*db) for (w,b), (dw,db) in zip(layers, grads)]
+    return eigval, eigvec
 
 if __name__ == '__main__':
     key = random.PRNGKey(0)
 
-    n = 6
+    N = 6
 
-    A = random.normal(key, (n, n))
-    A = 0.5*(A+A.T)
+    x0 = random.normal(key, (N,))
 
-    exact_eigvals, exact_eigvects = jnp.linalg.eig(A)
-    exact_eigvals, exact_eigvects = exact_eigvals.real, exact_eigvects.real
+    A = random.normal(key, (N, N))
+    eigvals = jnp.linalg.eigvalsh(A)
+    max_eigval = jnp.max(eigvals)
 
-    nn_width = n # = x0.size + t.size
-    nn_depth = 2
-    layer_sizes = nn_depth*[nn_width]
-    layers = random_layers(key, layer_sizes)
+    def rhs(x):
+        return (x.T@x)*A@x - (x.T@A@x)*x
 
-    x0 = jnp.eye(n)[0]
+    vector_field = lambda t, x, args: rhs(x)
+    term = ODETerm(vector_field)
 
-    num_epochs = 100000
-    epochs = range(num_epochs)
-    preds = []
-    losses = []
-    for epoch in epochs:
-        layers = update(layers, A, x0)
-        preds.append(single_predict(layers, x0))
-        losses.append(loss(layers, A, x0))
+    t0, t1, dt0 = 0.0, 10.0, 0.001
 
-    plt.title('Losses during training')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.plot(epochs, losses)
+    ts = jnp.arange(t0, t1, dt0)
+    solver = Tsit5()
+    saveat = SaveAt(ts=ts)
+    stepsize_controller = PIDController(rtol=1e-5, atol=1e-5)
+
+    solution = diffeqsolve(
+        term, 
+        solver, 
+        t0 = t0, t1 = t1, 
+        dt0=dt0, 
+        y0=x0,
+        saveat=saveat,
+        stepsize_controller = stepsize_controller    
+    )
+
+    ys = solution.ys
+
+    @vmap
+    def eigpair_loss(x):
+        x /= jnp.linalg.norm(x)
+        lmbda = x.T@A@x
+
+        eigval_loss = abs(max_eigval- lmbda)
+        eigvec_loss = jnp.linalg.norm(A@x - lmbda*x)
+
+        return jnp.array([eigval_loss, eigvec_loss])
+
+    @vmap
+    def rayleigh_qoutient(x):
+        return x.T@A@x/(x.T@x)
+
+    ode_losses = jnp.linalg.norm(vmap(rhs)(ys), axis=1)
+    plt.title('ODE Loss')
+    plt.plot(ts, ode_losses)
+    plt.savefig('./figures/ode_loss.pdf')
     plt.show()
 
-    eigvals, eigvecs = jnp.linalg.eig(A)
-    eigvals, eigvecs = eigvals.real, eigvecs.real
+    eigpair_losses = eigpair_loss(ys)
+    eigval_losses = eigpair_losses[:,0]
+    eigvec_losses = eigpair_losses[:,1]
+    plt.title('Eigenvalue Losses')
+    plt.ylim(0.0, 1.1*jnp.max(eigval_losses))
+    plt.plot(ts, eigval_losses)
+    plt.show()
 
-    print(eigvals)
+    plt.title('Eigenvector Losses')
+    plt.ylim(0.0, 1.1*jnp.max(eigvec_losses))
+    plt.plot(ts, eigvec_losses)
+    plt.show()
 
-    predicted_eigvecs = predict(layers, x0)
+    num_epochs = 1000
+    lambda_rayleigh, x_rayleigh = compute_max_eigval(A, num_epochs)
+    eigval_loss_rayleigh = abs(max_eigval - lambda_rayleigh)
+    eigvec_loss_rayleigh = jnp.linalg.norm(A@x_rayleigh - lambda_rayleigh*x_rayleigh)
 
-    eigvec = single_predict(layers, x0)
-    if not jnp.allclose(eigvec, 0.0):
-        eigvec /= jnp.linalg.norm(eigvec)
-    eigval = eigvec.T@A@eigvec
-
-    print(f'Estimated eigenvector x = {eigvec}')
-    print(f'Estimated eigenvalue a = {eigval}')
-    
-    print(f'|Ax - ax|: {jnp.linalg.norm(A@eigvec - eigval*eigvec)}')
-    print(f'Distance from a to nearest eigenvalue: {jnp.min(jnp.abs(eigval - eigvals))}')
+    print(f'|lambda_max - lambda| (Gradient Ascent ({num_epochs} epochs)): {eigval_loss_rayleigh}')
+    print(f'|lambda_max - lambda| (Neural ODE): {eigval_losses[-1]}')
+    print(f'|Ax - lambda*x| (Gradient Ascent ({num_epochs} epochs)): {eigvec_loss_rayleigh}')
+    print(f'|Ax - lambda*x| (Neural ODE): {eigvec_losses[-1]}')

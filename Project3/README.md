@@ -7,6 +7,7 @@
 - [JAX](https://jax.readthedocs.io/en/latest/index.html) for automatic differentiation and numerical linear algebra.
 - [NumPy](https://pypi.org/project/numpy/) for numerical linear algebra.
 - [Matplotlib](https://pypi.org/project/matplotlib/) for plotting.
+- [Diffrax](https://docs.kidger.site/diffrax/) for neural ODE.
 
 ## Run the Code
 
@@ -18,7 +19,7 @@ To train the neural network for solving the one-dimensional heat equation on the
 $ python3 heat_eq_mlp.py
 ```
 
-To train the neural network for obtaining and eigenvalue/eigenvector pair of a symmetric matrix, run
+To train a neural ode for obtaining the maximum eigenvalue and a corresponding eigenvector of a symmetric matrix, run
 
 ```
 $ python3 symdiag_mlp.py
