@@ -103,7 +103,7 @@ if __name__ == '__main__':
     plt.ylabel('$|\lambda_{\max} - \lambda|$')
     plt.ylim(0.0, 1.1*jnp.max(eigval_losses))
     plt.plot(ts, eigval_losses)
-    plt.savefig('./figures/')
+    plt.savefig('./figures/eigval_losses.pdf')
     plt.show()
 
     plt.title('Eigenvector Losses')
