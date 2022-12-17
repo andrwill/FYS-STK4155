@@ -8,7 +8,7 @@ from jax import random
 
 from diffrax import diffeqsolve, ODETerm, Tsit5, SaveAt, PIDController
 
-from pdemlp import random_layers, sigmoid
+from heat_eq_mlp import random_layers, sigmoid
 
 def rayleigh_quotient(x, A):
     return x.T@A@x/(x.T@x)
